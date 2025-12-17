@@ -690,7 +690,7 @@ contains
 
     ! Calculate common-lines contributions from all the slices
     subroutine calc_comlin_contrib( ref_space, symop, pfts_cl_even, pfts_cl_odd, ctf2_cl_even, ctf2_cl_odd )
-        real,             parameter     :: MAX_ATHRES = 10.  ! within 10 degree rotational difference, two stuffs look the same
+        real,             parameter     :: MAX_ATHRES = 5.  ! within 5 degree rotational difference, two stuffs look the same
         type(oris),       intent(in)    :: ref_space
         type(sym),        intent(in)    :: symop
         complex(kind=dp), intent(inout) :: pfts_cl_even(pftsz,kfromto(1):kfromto(2),ncls)
@@ -711,7 +711,7 @@ contains
         endif
         drot    = pftc_glob%get_dang()
         kbwin   = kbinterpol(1.5, KBALPHA)
-        kb_norm = kbwin%apod_dp(0._dp) + kbwin%apod_dp(1._dp) + kbwin%apod_dp(-1._dp)
+        kb_norm = (kbwin%apod_dp(0._dp) + kbwin%apod_dp(0._dp+drot/MAX_ATHRES) + kbwin%apod_dp(0._dp-drot/MAX_ATHRES))/3._dp
         pfts_cl_even = DCMPLX_ZERO; pfts_cl_odd = DCMPLX_ZERO
         ctf2_cl_even = 0.d0; ctf2_cl_odd  = 0.d0
         ! Symmetry rotation matrices
@@ -767,6 +767,7 @@ contains
                     self_w    = d / MAX_ATHRES
                     ! intepolate common line in jref-th slice
                     rotl = targ_irot - 1; rotr = targ_irot + 1
+                    if( rotr > nrots ) rotr = rotr - nrots
                     dd   = real(targ_w,dp)
                     w    = kbwin%apod_dp(dd); wl = kbwin%apod_dp(dd-drot/MAX_ATHRES); wr = kbwin%apod_dp(dd+drot/MAX_ATHRES)
                     ! normalizing w,wl,wr with a kb normalization constant
