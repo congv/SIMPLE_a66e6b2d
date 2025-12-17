@@ -44,8 +44,8 @@ contains
     !> Module initialization
     subroutine polar_cavger_new( pftc, comlin, nrefs )
         class(polarft_calc), intent(in) :: pftc
-        logical,                 intent(in) :: comlin
-        integer,       optional, intent(in) :: nrefs
+        logical,             intent(in) :: comlin
+        integer,   optional, intent(in) :: nrefs
         call polar_cavger_kill
         nrots    = pftc%get_nrots()
         pftsz    = pftc%get_pftsz()
@@ -73,8 +73,8 @@ contains
     end subroutine polar_cavger_zero_pft_refs
 
     subroutine polar_cavger_set_ref_pftc( icls, which, pftc )
-        integer,                 intent(in)    :: icls
-        character(len=*),        intent(in)    :: which
+        integer,             intent(in)    :: icls
+        character(len=*),    intent(in)    :: which
         class(polarft_calc), intent(inout) :: pftc
         select case(trim(which))
         case('merged')
@@ -141,7 +141,7 @@ contains
         integer,                         intent(in)    :: nptcls
         integer,                         intent(in)    :: pinds(nptcls)
         class(sp_project),               intent(inout) :: spproj
-        class(polarft_calc), target, intent(inout) :: pftc
+        class(polarft_calc),   target,   intent(inout) :: pftc
         real,                  optional, intent(in)    :: incr_shifts(2,nptcls)
         logical,               optional, intent(in)    :: is3d
         class(oris), pointer :: spproj_field
@@ -419,8 +419,8 @@ contains
                         fsc(k)   = fsc(k)   + real(sum(even(:,k) * conjg(odd(:,k))) ,dp)
                         vare(k)  = vare(k)  + real(sum(even(:,k) * conjg(even(:,k))),dp)
                         varo(k)  = varo(k)  + real(sum(odd(:,k)  * conjg(odd(:,k))) ,dp)
-                        sig2e(k) = sig2e(k) + sum(ctf2_clin_even(:,k,icls))
-                        sig2o(k) = sig2o(k) + sum(ctf2_clin_odd(:,k,icls))
+                        sig2e(k) = sig2e(k) + sum(ctf2_even(:,k,icls) + ctf2_clin_even(:,k,icls))
+                        sig2o(k) = sig2o(k) + sum(ctf2_odd(:,k,icls)  + ctf2_clin_odd(:,k,icls))
                     enddo
                 enddo
                 !$omp end parallel do
@@ -690,7 +690,7 @@ contains
 
     ! Calculate common-lines contributions from all the slices
     subroutine calc_comlin_contrib( ref_space, symop, pfts_cl_even, pfts_cl_odd, ctf2_cl_even, ctf2_cl_odd )
-        logical, parameter :: L_KB = .true.
+        real,             parameter     :: MAX_ATHRES = 10.  ! within 10 degree rotational difference, two stuffs look the same
         type(oris),       intent(in)    :: ref_space
         type(sym),        intent(in)    :: symop
         complex(kind=dp), intent(inout) :: pfts_cl_even(pftsz,kfromto(1):kfromto(2),ncls)
@@ -702,15 +702,16 @@ contains
         complex(dp) :: cl_l(kfromto(1):kfromto(2)), cl_r(kfromto(1):kfromto(2)), cl_e(kfromto(1):kfromto(2))
         complex(dp) :: cl_o(kfromto(1):kfromto(2)), pft(pftsz,kfromto(1):kfromto(2))
         real(dp)    :: rl_l(kfromto(1):kfromto(2)), rl_r(kfromto(1):kfromto(2)), rl_e(kfromto(1):kfromto(2))
-        real(dp)    :: rl_o(kfromto(1):kfromto(2)), ctf2(pftsz,kfromto(1):kfromto(2)), dd, w, wl, wr, sumw
+        real(dp)    :: rl_o(kfromto(1):kfromto(2)), ctf2(pftsz,kfromto(1):kfromto(2)),dd,w,wl,wr,sumw,kb_norm
         real        :: eulers(3),R(3,3,ncls),Rj(3,3),tRi(3,3),psi,drot,d,targ_w,self_w
         integer     :: rotl,rotr, iref, jref, m, self_irot, targ_irot, isym, nsym
         logical     :: l_rotm
         if( .not.ref_space%isthere('mirr') )then
             THROW_HARD('Mirror index missing in reference search space')
         endif
-        drot = pftc_glob%get_dang()
-        if( L_KB ) kbwin = kbinterpol(1.5, KBALPHA)
+        drot    = pftc_glob%get_dang()
+        kbwin   = kbinterpol(1.5, KBALPHA)
+        kb_norm = kbwin%apod_dp(0._dp) + kbwin%apod_dp(1._dp) + kbwin%apod_dp(-1._dp)
         pfts_cl_even = DCMPLX_ZERO; pfts_cl_odd = DCMPLX_ZERO
         ctf2_cl_even = 0.d0; ctf2_cl_odd  = 0.d0
         ! Symmetry rotation matrices
@@ -751,92 +752,52 @@ contains
                     endif
                     ! Euler angles identification
                     eulers = m2euler_fast(Rj)
-                    ! Interpolation
-                    if( L_KB )then
-                        ! KB
-                        ! in plane rotation index of jref slice intersecting iref
-                        psi       = 360.0 - eulers(3)
-                        targ_irot = pftc_glob%get_roind_fast(psi)
-                        d         = psi - pftc_glob%get_rot(targ_irot)
-                        if( d > drot ) d = d - 360.0
-                        targ_w    = d / drot
-                        ! in plane rotation index of iref slice
-                        psi       = eulers(1)
-                        self_irot = pftc_glob%get_roind_fast(psi)
-                        d         = psi - pftc_glob%get_rot(self_irot)
-                        if( d > drot ) d = d - 360.0
-                        self_w    = d / drot
-                        ! intepolate common line in jref-th slice
-                        rotl = targ_irot - 1; rotr = targ_irot + 1
-                        dd   = real(targ_w,dp)
-                        w    = kbwin%apod_dp(dd); wl = kbwin%apod_dp(dd-1.d0); wr = kbwin%apod_dp(dd+1.d0)
-                        sumw = wl + w + wr
-                        w    = w / sumw; wl = wl / sumw; wr = wr / sumw
-                        call get_line(jref, targ_irot, .true., cl_e, rl_e)
-                        call get_line(jref, rotl,      .true., cl_l, rl_l)
-                        call get_line(jref, rotr,      .true., cl_r, rl_r)
-                        cl_e = wl*cl_l + w*cl_e + wr*cl_r
-                        rl_e = wl*rl_l + w*rl_e + wr*rl_r
-                        call get_line(jref, targ_irot, .false., cl_o, rl_o)
-                        call get_line(jref, rotl,      .false., cl_l, rl_l)
-                        call get_line(jref, rotr,      .false., cl_r, rl_r)
-                        cl_o = wl*cl_l + w*cl_o + wr*cl_r
-                        rl_o = wl*rl_l + w*rl_o + wr*rl_r
-                        ! extrapolate the common line to iref-th slice
-                        rotl = self_irot - 1; rotr = self_irot + 1
-                        if( rotr > nrots ) rotr = rotr - nrots
-                        dd   = real(self_w,dp)
-                        w    = kbwin%apod_dp(dd); wl = kbwin%apod_dp(dd-1.d0); wr = kbwin%apod_dp(dd+1.d0)
-                        sumw = wl + w + wr
-                        w    = w / sumw; wl = wl / sumw; wr = wr / sumw
-                        ! leftmost line
-                        call extrapolate_line(iref, rotl,      wl, cl_e, cl_o, rl_e, rl_o)
-                        ! nearest line
-                        call extrapolate_line(iref, self_irot, w,  cl_e, cl_o, rl_e, rl_o)
-                        ! rightmost line
-                        call extrapolate_line(iref, rotr,      wr, cl_e, cl_o, rl_e, rl_o)
-                    else
-                        ! Linear interpolation
-                        ! in plane rotation index of jref slice intersecting iref
-                        psi       = 360.0 - eulers(3)
-                        targ_irot = pftc_glob%get_roind_fast(psi)
-                        d         = psi - pftc_glob%get_rot(targ_irot)
-                        if( d > drot ) d = d - 360.0
-                        if( d < 0. )then
-                            targ_irot = targ_irot - 1
-                            if( targ_irot < 1 ) targ_irot = targ_irot + nrots
-                            d = d + drot
-                        endif
-                        targ_w = d / drot
-                        ! in plane rotation index of iref slice
-                        psi       = eulers(1)
-                        self_irot = pftc_glob%get_roind_fast(psi)
-                        d         = psi - pftc_glob%get_rot(self_irot)
-                        if( d > drot ) d = d - 360.0
-                        if( d < 0. )then
-                            self_irot = self_irot - 1
-                            if( self_irot < 1 ) self_irot = self_irot + nrots
-                            d = d + drot
-                        endif
-                        self_w = d / drot
-                        ! intepolate common line in jref-th slice
-                        rotl = targ_irot; rotr = rotl+1
-                        wl   = real(targ_w,dp); wr = 1.d0 - wl
-                        call get_line(jref, rotl, .true., cl_e, rl_e)
-                        call get_line(jref, rotr, .true., cl_r, rl_r)
-                        cl_e = wr*cl_e + wl*cl_r
-                        rl_e = wr*rl_e + wl*rl_r
-                        call get_line(jref, rotl, .false., cl_o, rl_o)
-                        call get_line(jref, rotr, .false., cl_r, rl_r)
-                        cl_o = wr*cl_o + wl*cl_r
-                        rl_o = wr*rl_o + wl*rl_r
-                        ! extrapolate the common line to iref-th slice
-                        rotl = self_irot; rotr = rotl + 1
-                        if( rotr > nrots ) rotr = rotr - nrots
-                        w  = real(self_w,dp)
-                        call extrapolate_line(iref, rotl, 1.d0-w, cl_e, cl_o, rl_e, rl_o)
-                        call extrapolate_line(iref, rotr,      w, cl_e, cl_o, rl_e, rl_o)
-                    endif
+                    ! KB Interpolation
+                    ! in plane rotation index of jref slice intersecting iref
+                    psi       = 360.0 - eulers(3)
+                    targ_irot = pftc_glob%get_roind_fast(psi)
+                    d         = psi - pftc_glob%get_rot(targ_irot)
+                    if( d > drot ) d = d - 360.0
+                    targ_w    = d / MAX_ATHRES
+                    ! in plane rotation index of iref slice
+                    psi       = eulers(1)
+                    self_irot = pftc_glob%get_roind_fast(psi)
+                    d         = psi - pftc_glob%get_rot(self_irot)
+                    if( d > drot ) d = d - 360.0
+                    self_w    = d / MAX_ATHRES
+                    ! intepolate common line in jref-th slice
+                    rotl = targ_irot - 1; rotr = targ_irot + 1
+                    dd   = real(targ_w,dp)
+                    w    = kbwin%apod_dp(dd); wl = kbwin%apod_dp(dd-drot/MAX_ATHRES); wr = kbwin%apod_dp(dd+drot/MAX_ATHRES)
+                    ! normalizing w,wl,wr with a kb normalization constant
+                    w    = w /kb_norm
+                    wl   = wl/kb_norm
+                    wr   = wr/kb_norm
+                    call get_line(jref, targ_irot, .true., cl_e, rl_e)
+                    call get_line(jref, rotl,      .true., cl_l, rl_l)
+                    call get_line(jref, rotr,      .true., cl_r, rl_r)
+                    cl_e = wl*cl_l + w*cl_e + wr*cl_r
+                    rl_e = wl*rl_l + w*rl_e + wr*rl_r
+                    call get_line(jref, targ_irot, .false., cl_o, rl_o)
+                    call get_line(jref, rotl,      .false., cl_l, rl_l)
+                    call get_line(jref, rotr,      .false., cl_r, rl_r)
+                    cl_o = wl*cl_l + w*cl_o + wr*cl_r
+                    rl_o = wl*rl_l + w*rl_o + wr*rl_r
+                    ! extrapolate the common line to iref-th slice
+                    rotl = self_irot - 1; rotr = self_irot + 1
+                    if( rotr > nrots ) rotr = rotr - nrots
+                    dd   = real(self_w,dp)
+                    w    = kbwin%apod_dp(dd); wl = kbwin%apod_dp(dd-drot/MAX_ATHRES); wr = kbwin%apod_dp(dd+drot/MAX_ATHRES)
+                    ! normalizing w,wl,wr with a kb normalization constant
+                    w    = w /kb_norm
+                    wl   = wl/kb_norm
+                    wr   = wr/kb_norm
+                    ! leftmost line
+                    call extrapolate_line(iref, rotl,      wl, cl_e, cl_o, rl_e, rl_o)
+                    ! nearest line
+                    call extrapolate_line(iref, self_irot, w,  cl_e, cl_o, rl_e, rl_o)
+                    ! rightmost line
+                    call extrapolate_line(iref, rotr,      wr, cl_e, cl_o, rl_e, rl_o)
                 enddo
             enddo
         enddo
@@ -959,7 +920,7 @@ contains
     !>  \brief  Converts the polar references to a cartesian grid
     subroutine polar_cavger_refs2cartesian( pftc, cavgs, which, pfts_in )
         use simple_image
-        class(polarft_calc), intent(in)    :: pftc
+        class(polarft_calc),     intent(in)    :: pftc
         type(image),             intent(inout) :: cavgs(ncls)
         character(len=*),        intent(in)    :: which
         complex(dp),   optional, intent(in)    :: pfts_in(1:pftsz,kfromto(1):kfromto(2),1:ncls)
@@ -1136,8 +1097,8 @@ contains
     ! Converts cavgs PFTS to cartesian grids and writes them
     subroutine polar_cavger_write_cartrefs( pftc, tmpl_fname, which )
         class(polarft_calc), intent(in) :: pftc
-        class(string),           intent(in) :: tmpl_fname
-        character(len=*),        intent(in) :: which
+        class(string),       intent(in) :: tmpl_fname
+        character(len=*),    intent(in) :: which
         type(image), allocatable :: imgs(:)
         call alloc_imgarr(ncls, [params_glob%box_crop, params_glob%box_crop,1], smpd, imgs)
         select case(trim(which))
@@ -1154,7 +1115,7 @@ contains
     ! Converts all cavgs PFTS to cartesian grids and writes them
     subroutine polar_cavger_writeall_cartrefs( pftc, tmpl_fname )
         class(polarft_calc), intent(in) :: pftc
-        class(string),           intent(in) :: tmpl_fname
+        class(string),       intent(in) :: tmpl_fname
         type(image), allocatable :: imgs(:)
         call alloc_imgarr(ncls, [params_glob%box_crop, params_glob%box_crop,1], smpd, imgs)
         call polar_cavger_refs2cartesian( pftc, imgs, 'even' )
@@ -1422,8 +1383,8 @@ contains
     ! the particles and the references stored in the pftc
     subroutine center_3Dpolar_refs( pftc, algndoc, algnrefs )
         class(polarft_calc), intent(inout) :: pftc
-        class(oris),             intent(inout) :: algndoc
-        class(oris),             intent(in)    :: algnrefs
+        class(oris),         intent(inout) :: algndoc
+        class(oris),         intent(in)    :: algnrefs
         real    :: R(3,3),offset3D(3), offset2D(3)
         integer :: iref
         ! estimate 3D offset from particle alignement parameters
