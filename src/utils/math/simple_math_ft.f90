@@ -1,0 +1,238 @@
+module simple_math_ft
+use simple_defs
+use simple_error, only: simple_exception
+use simple_is_check_assert
+use simple_srch_sort_loc
+implicit none
+
+interface csq_fast
+    module procedure csq_fast_1, csq_fast_2
+end interface
+
+interface csq
+    module procedure csq_1, csq_2
+end interface
+
+contains
+
+    !>   returns the Fourier index of resolution
+    integer pure function calc_fourier_index( res, box, smpd )
+        real, intent(in)    :: res, smpd
+        integer, intent(in) :: box
+        real :: res_here
+        res_here = max(res,2.*smpd)
+        calc_fourier_index = min(box/2,nint((real(box)*smpd)/res_here))
+    end function calc_fourier_index
+
+    !> \brief calculate logical mask filtering out the Graphene bands
+    function calc_graphene_mask( box, smpd ) result( mask )
+        integer, intent(in)  :: box
+        real,    intent(in)  :: smpd
+        real,    allocatable :: res(:), sqdiff_band1(:), sqdiff_band2(:)
+        logical, allocatable :: mask(:)
+        integer, parameter   :: NBANDS = 3
+        integer              :: loc(NBANDS), n, i
+        res = get_resarr( box, smpd )
+        n   = size(res)
+        allocate(sqdiff_band1(n), source=(res - GRAPHENE_BAND1)**2.0)
+        allocate(sqdiff_band2(n), source=(res - GRAPHENE_BAND2)**2.0)
+        allocate(mask(n), source=.true.)
+        loc = minnloc(sqdiff_band1, NBANDS)
+        do i=1,NBANDS
+            mask(loc(i)) = .false.
+        end do
+        loc = minnloc(sqdiff_band2, NBANDS)
+        do i=1,NBANDS
+            mask(loc(i)) = .false.
+        end do
+    end function calc_graphene_mask
+    
+    !>   returns the Fourier index of res
+    real pure function calc_lowpass_lim( find, box, smpd )
+        integer, intent(in) :: find, box !< box size
+        real, intent(in)    :: smpd      !< smpd pixel size \f$ (\si{\angstrom}) \f$
+        calc_lowpass_lim = real(box)*smpd/real(find)
+    end function calc_lowpass_lim
+
+    ! faster unsafe complex magnitude, single precision
+    real(sp) elemental function csq_fast_1( comp )
+        complex(sp), intent(in) :: comp
+        csq_fast_1 = real(comp*conjg(comp))
+    end function csq_fast_1
+
+    ! faster unsafe complex magnitude, double precision
+    real(dp) elemental function csq_fast_2( comp )
+        complex(dp), intent(in) :: comp
+        csq_fast_2 = real(comp*conjg(comp),dp)
+    end function csq_fast_2
+
+    !>   is for complex squaring
+    elemental function csq_1( a ) result( sq )
+        complex(sp), intent(in) :: a !< complx component
+        real(sp) :: sq, x, y, frac
+        x = abs(real(a))
+        y = abs(aimag(a))
+        if( is_zero(x)) then
+            sq = y*y
+        else if( is_zero(y) ) then
+           sq = x*x
+        else if( x > y ) then
+            frac = y/x
+            sq = x*x*(1.+frac*frac)
+        else
+            frac = x/y
+            sq = y*y*(1.+frac*frac)
+        endif
+    end function csq_1
+
+    !>  is for double complex squaring
+    elemental function csq_2( a ) result( sq )
+        complex(dp), intent(in) :: a !< complx component
+        real(dp) :: sq, x, y, frac
+        x = abs(real(a))
+        y = abs(aimag(a))
+        if( is_zero(x)) then
+            sq = y*y
+        else if( is_zero(y) ) then
+            sq = x*x
+        else if( x > y ) then
+            frac = y/x
+            sq = x*x*(1.+frac*frac)
+        else
+            frac = x/y
+            sq = y*y*(1.+frac*frac)
+        endif
+    end function csq_2
+
+    !>   one-dimensional cyclic index generation
+    !! \param lims limits
+    pure function cyci_1d( lims, i ) result( ind )
+        integer, intent(in) :: lims(2), i !< input var
+        integer :: ind, del
+        ind = i
+        if( ind > lims(2) )then
+            del = ind-lims(2)
+            ind = lims(1)+del-1
+        else if( ind < lims(1) )then
+            del = lims(1)-ind
+            ind = lims(2)-del+1
+        endif
+    end function cyci_1d
+
+    !>  as per cyci_1d, assumes lower limit equals 1
+    pure function cyci_1d_static( ulim, i ) result( ind )
+        integer, intent(in) :: ulim, i !< input vars upper limit and index
+        integer :: ind ! return index
+        ind = merge(ulim+i, i , i<1)
+        ind = merge(i-ulim,ind ,i>ulim)
+    end function cyci_1d_static
+
+    !>   is for working out the fourier dimension
+    pure function fdim( d ) result( fd )
+        integer, intent(in) :: d !< dimension
+        integer :: fd
+        if(is_even(d))then
+            fd = d/2+1
+        else
+            fd = (d-1)/2+1
+        endif
+    end function fdim
+
+    function get_find_at_res( res, crit_res ) result( find )
+        real,    intent(in) :: res(:), crit_res
+        integer :: n, h, find
+        n = size(res)
+        do h=3,n-1
+            if( res(h) >= crit_res )then
+                cycle
+            else
+                find = h - 1
+                exit
+            endif
+        end do
+    end function get_find_at_res
+
+    function get_find_at_crit( corrs, crit_corr, incrreslim ) result( find )
+        real,    intent(in) :: corrs(:), crit_corr
+        logical, intent(in), optional :: incrreslim
+        integer :: n, h, find
+        logical :: iincrreslim
+        iincrreslim = .false.
+        if( present(incrreslim) ) iincrreslim = incrreslim
+        n = size(corrs)
+        do h=3,n-1
+            if( corrs(h) >= crit_corr )then
+                cycle
+            else
+                find = h - 1
+                exit
+            endif
+        end do
+        if( iincrreslim )then
+            find = min(find+10,n-1)
+        else
+            find = min(find,n-1)
+        endif
+    end function get_find_at_crit
+
+    !>  \brief get array of resolution steps
+    function get_resarr( box, smpd ) result( res )
+        integer, intent(in) :: box
+        real,    intent(in) :: smpd
+        real, allocatable   :: res(:)
+        integer :: n, k
+        n = fdim(box) - 1
+        allocate( res(n) )
+        do k=1,n
+            res(k) = calc_lowpass_lim(k, box, smpd)
+        end do
+    end function get_resarr
+
+    !>   is for calculating complex arg/abs/modulus, from numerical recipes
+    elemental function mycabs( a ) result( myabs )
+        complex, intent(in) :: a      !< complx component
+        real                :: myabs, x, y, frac
+        x = abs(real(a))
+        y = abs(aimag(a))
+        if( is_zero(x) ) then
+            myabs = y
+        else if( is_zero(y)  ) then
+           myabs = x
+        else if( x > y ) then
+            frac = y/x
+            myabs = x*sqrt(1.+frac*frac)
+        else
+            frac = x/y
+            myabs = y*sqrt(1.+frac*frac)
+        endif
+    end function mycabs
+
+    !>   is for calculating the phase angle of a Fourier component
+    !! \return phase phase angle only meaningful when cabs(comp) is well above the noise level
+    elemental function phase_angle( comp ) result( phase )
+        complex, intent(in) :: comp !< Fourier component
+        real :: nom, denom, phase
+        nom = aimag(comp)
+        denom = real(comp)
+        if( is_zero(denom) )then
+           if( is_zero(nom) )then
+                phase = 0.
+            else if( nom > 0. )then
+                phase = pi/2.
+            else
+                phase = -pi/2.
+            endif
+            return
+        endif
+        phase = atan(nom/denom)
+    end function phase_angle
+
+    !>   get the resolution in angstrom, given angle and diameter
+    !! \param ang,diam angular resolution (degrees) and diameter (\f$\si{\angstrom}\f$)
+    pure function resang( ang, diam ) result( res )
+        real, intent(in)  :: ang, diam
+        real :: res                      !< spatial resolution (\f$\si{\per\angstrom}\f$)
+        res = (ang/360.)*(pi*diam)
+    end function resang
+
+end module simple_math_ft
